@@ -1,51 +1,99 @@
 import pandas as pd
+import numpy as np
+import pubchempy as pcp
+import ssl
+
 from rdkit import Chem
-from rdkit.Chem import AllChem
-from sklearn.model_selection import train_test_split
+from rdkit.Chem import rdFingerprintGenerator
+
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-import matplotlib.pyplot as plt
-import seaborn as sns
+from sklearn.model_selection import cross_val_score, KFold
 
-# Load the dataset
-df = pd.read_csv('dataset.csv')  # Importing the given dataset
+# Disable SSL verification (only if you have certificate issues)
+ssl._create_default_https_context = ssl._create_unverified_context
 
-# Convert SMILES to ECFP
-def smiles_to_ecfp(smiles):
-    mol = Chem.MolFromSmiles(smiles)
-    if mol:
-        return list(AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048))
-    else:
-        return None
+# 1) Define helper functions
+def get_smiles_from_pubchem(compound_name):
+    """Fetch canonical SMILES for a compound name from PubChem."""
+    try:
+        compound = pcp.get_compounds(compound_name, 'name')
+        if compound:
+            return compound[0].canonical_smiles
+    except Exception as e:
+        print(f"Error fetching SMILES for {compound_name}: {e}")
+    return None
 
-df['ECFP'] = df['SMILES'].apply(smiles_to_ecfp)
+def smiles_to_ecfp(smiles, radius=2, n_bits=2048):
+    """Generate ECFP (Morgan) fingerprint as a list of bits (0/1) from a SMILES string."""
+    try:
+        if smiles:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol:
+                generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=n_bits)
+                fp = generator.GetFingerprint(mol)
+                return list(fp)
+            else:
+                print(f"Invalid SMILES: {smiles}")
+        else:
+            print("SMILES is None, skipping...")
+    except Exception as e:
+        print(f"Error generating ECFP for SMILES {smiles}: {e}")
+    return None
 
-# Prepare data for training
-X = pd.DataFrame(df['ECFP'].tolist())
-y = df['avg_lifespan_change_percent']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# 2) Load the full dataset
+df = pd.read_csv('dataset.csv')
 
-# Train model
-model = RandomForestRegressor(n_estimators=100, random_state=42)
-model.fit(X_train, y_train)
+# 3) Take a small subset (first 5 rows) just for a test run
+df_small = df.iloc[:2000].copy()
 
-# Evaluate model
-y_pred = model.predict(X_test)
-mse = mean_squared_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
-print(f"Mean Squared Error: {mse}")
-print(f"R² Score: {r2}")
+# Create columns for SMILES and ECFP
+df_small['smiles'] = None
+df_small['ecfp'] = None
 
-# Save promising compounds
-df['Predicted Lifespan Impact'] = model.predict(pd.DataFrame(df['ECFP'].tolist()))
-promising = df[df['Predicted Lifespan Impact'] >= 10]
-promising.to_csv('promising_compounds.csv', index=False)
+index = 0 
+# 4) Populate SMILES and ECFP in this small subset
+for idx, row in df_small.iterrows():
+    compound_name = row['compound_name']
+    smiles = get_smiles_from_pubchem(compound_name)
+    df_small.at[idx, 'smiles'] = smiles
+    print(index)
+    index += 1 
+    if smiles:
+        ecfp_bits = smiles_to_ecfp(smiles)
+        df_small.at[idx, 'ecfp'] = ecfp_bits
 
-# Plot results
-sns.barplot(x='compound_name', y='Predicted Lifespan Impact', data=promising)
-plt.axhline(10, color='r', linestyle='--', label='Threshold: 10%')
-plt.legend()
-plt.title("Promising Compounds")
-plt.xticks(rotation=45)
-plt.savefig('output_plots/promising_compounds.png')  # Save to the correct folder
-plt.show()
+# 5) Define our target column
+target_col = 'avg_lifespan_change_percent'
+
+# 6) Drop any rows missing the target or missing ECFP
+df_small = df_small.dropna(subset=[target_col])
+df_small = df_small[df_small['ecfp'].notnull()]
+
+# If we still have at least 2-3 rows, we can attempt a tiny model
+if len(df_small) < 2:
+    print("Not enough rows to train/test a model. Here's what's left:")
+    print(df_small)
+else:
+    # 7) Build feature matrix (X) and target vector (y)
+    X_list = []
+    y_list = []
+    for _, row in df_small.iterrows():
+        X_list.append(row['ecfp'])  # 2048-bit ECFP
+        y_list.append(row[target_col])
+
+    X = np.array(X_list)
+    y = np.array(y_list)
+
+    print("X shape:", X.shape)
+    print("y shape:", y.shape)
+    print("X sample (first row):", X[0][:20], "...")  # Show first 20 bits as a preview
+    print("y sample (first row):", y[0])
+
+    # 8) Build and evaluate a Random Forest with cross-validation
+    model = RandomForestRegressor(n_estimators=10, random_state=42)
+    kfold = KFold(n_splits=2, shuffle=True, random_state=42)  # with just a few points, 2-fold is about all we can do
+
+    scores_mae = cross_val_score(model, X, y, cv=kfold, scoring='neg_mean_absolute_error')
+    mae_scores = -scores_mae  # turn negative into positive
+    print("MAE (CV folds):", mae_scores)
+    print("Mean MAE:", mae_scores.mean())
