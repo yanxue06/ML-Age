@@ -5,7 +5,6 @@ import ssl
 
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
-
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import cross_val_score, KFold
 
@@ -40,6 +39,39 @@ def smiles_to_ecfp(smiles, radius=2, n_bits=2048):
         print(f"Error generating ECFP for SMILES {smiles}: {e}")
     return None
 
+def extract_numeric_value(dosage_str):
+    """Extract numeric value from dosage string"""
+    if pd.isna(dosage_str):
+        return None
+    match = re.search(r'([\d.]+)', str(dosage_str))
+    return float(match.group(1)) if match else None
+
+def process_additional_features(df):
+    """Process additional features for the model"""
+    
+    # Create new features DataFrame
+    additional_features = pd.DataFrame()
+    
+    # 1. Process dosage - extract numeric values
+    additional_features['dosage_value'] = df['dosage'].apply(extract_numeric_value)
+    
+    # 2. Convert significance to numeric
+    le = LabelEncoder()
+    additional_features['significance_encoded'] = le.fit_transform(df['avg_lifespan_significance'].fillna('NA'))
+    
+    # 3. Encode gender
+    additional_features['is_male'] = df['gender_new'].apply(lambda x: 1 if str(x).lower() == 'male' else 0)
+    additional_features['is_female'] = df['gender_new'].apply(lambda x: 1 if str(x).lower() == 'female' else 0)
+    
+    # 4. Encode species
+    species_dummies = pd.get_dummies(df['species'], prefix='species')
+    additional_features = pd.concat([additional_features, species_dummies], axis=1)
+    
+    # 5. Fill missing values with median
+    additional_features = additional_features.fillna(additional_features.median())
+    
+    return additional_features
+
 # 2) Load the full dataset
 df = pd.read_csv('dataset.csv')
 
@@ -69,31 +101,50 @@ target_col = 'avg_lifespan_change_percent'
 df_small = df_small.dropna(subset=[target_col])
 df_small = df_small[df_small['ecfp'].notnull()]
 
-# If we still have at least 2-3 rows, we can attempt a tiny model
-if len(df_small) < 2:
-    print("Not enough rows to train/test a model. Here's what's left:")
-    print(df_small)
-else:
-    # 7) Build feature matrix (X) and target vector (y)
-    X_list = []
-    y_list = []
-    for _, row in df_small.iterrows():
-        X_list.append(row['ecfp'])  # 2048-bit ECFP
+# Process additional features
+additional_features_df = process_additional_features(df_small)
+
+# Combine ECFP with additional features
+X_list = []
+y_list = []
+
+for idx, row in df_small.iterrows():
+    if row['ecfp'] is not None:
+        # Get ECFP features
+        ecfp_features = np.array(row['ecfp'])
+        
+        # Get additional features
+        additional_feat = additional_features_df.iloc[idx].values
+        
+        # Combine features
+        combined_features = np.concatenate([ecfp_features, additional_feat])
+        
+        X_list.append(combined_features)
         y_list.append(row[target_col])
 
-    X = np.array(X_list)
-    y = np.array(y_list)
+X = np.array(X_list)
+y = np.array(y_list)
 
-    print("X shape:", X.shape)
-    print("y shape:", y.shape)
-    print("X sample (first row):", X[0][:20], "...")  # Show first 20 bits as a preview
-    print("y sample (first row):", y[0])
+# Scale the features
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
 
-    # 8) Build and evaluate a Random Forest with cross-validation
-    model = RandomForestRegressor(n_estimators=10, random_state=42)
-    kfold = KFold(n_splits=2, shuffle=True, random_state=42)  # with just a few points, 2-fold is about all we can do
+# Create a more robust model with more trees and better parameters
+model = RandomForestRegressor(
+    n_estimators=100,  # More trees
+    max_depth=10,      # Control depth to prevent overfitting
+    min_samples_split=5,
+    random_state=42
+)
 
-    scores_mae = cross_val_score(model, X, y, cv=kfold, scoring='neg_mean_absolute_error')
-    mae_scores = -scores_mae  # turn negative into positive
-    print("MAE (CV folds):", mae_scores)
-    print("Mean MAE:", mae_scores.mean())
+# Use 3-fold CV instead of 2-fold for better evaluation
+kfold = KFold(n_splits=3, shuffle=True, random_state=42)
+
+# 8) Build and evaluate a Random Forest with cross-validation
+scores_mae = cross_val_score(model, X, y, cv=kfold, scoring='neg_mean_absolute_error')
+mae_scores = -scores_mae  # turn negative into positive
+print("MAE (CV folds):", mae_scores)
+print("Mean MAE:", mae_scores.mean())
+
+
+
