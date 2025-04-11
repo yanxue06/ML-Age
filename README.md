@@ -12,6 +12,7 @@ This project explores the lifespan extension potential of chemical compounds usi
 
 ## Current Work
 - Testing different regression models, including **Chemprop** ([repo](https://github.com/chemprop/chemprop)) and **Molformer** ([repo](https://github.com/IBM/molformer)).
+- Using conformal prediction ([repo](https://github.com/deel-ai/puncc)) to capture ranges where results can lie, and abstain from making unconfident choices. 
 - Evaluating performance via **coefficient of determination (R²)**.
 - Investigating lifespan effects across multiple species: *Caenorhabditis elegans, Drosophila melanogaster, Mus musculus*.
 
