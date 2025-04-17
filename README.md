@@ -1,7 +1,7 @@
 # ML-Age
 
 ## Overview
-This project explores the lifespan extension potential of chemical compounds using machine learning. Under the mentorship of [Dr. Michał Koziarski](https://koziarskilab.com/), we are developing predictive models to assess compounds' effects on longevity.
+This project explores the lifespan extension potential of chemical compounds using machine learning. Under the mentorship of [Dr. Michał Koziarski](https://koziarskilab.com/), we are developing predictive models to assess compounds' effects on longevity and cluster compounds with most positive health benifits. 
 
 ## Approach
 1. Extract compound names from the dataset and retrieve SMILES notations via PubChem.
